@@ -285,12 +285,12 @@ class GristBankUpdater:
                 # Apply bank-specific formatting if needed
                 if bank_name and bank_name.upper() == 'ICICI':
                     # Convert to DD-MM-YYYY format for ICICI
-                    formatted_date = dt.strftime('%d-%m-%Y')
+                    formatted_date = dt.strftime('%d-%m-%Y %H:%M:%S')
                     logger.info(f"ICICI bank: Converting date {date_value} -> {formatted_date}")
                     return formatted_date
                 else:
                     # Default to YYYY-MM-DD for other banks or when bank_name is not specified
-                    formatted_date = dt.strftime('%Y-%m-%d')
+                    formatted_date = dt.strftime('%d-%m-%Y %H:%M:%S')
                     logger.debug(f"Non-ICICI bank: Converting date {date_value} -> {formatted_date}")
                     return formatted_date
             else:
