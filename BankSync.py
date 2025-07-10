@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta
 import time
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import List, Dict, Any, Optional
 import os
 from google.oauth2.service_account import Credentials
@@ -13,8 +14,28 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+LOG_FILE = os.getenv('LOG_FILE', 'banksync.log')
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+LOG_MAX_BYTES = int(os.getenv('LOG_MAX_BYTES', 5 * 1024 * 1024))  # Default to 5 MB
+LOG_BACKUP_COUNT = int(os.getenv('LOG_BACKUP_COUNT', 5)) # Default to 5 backup files
+
+# Create a logger
 logger = logging.getLogger(__name__)
+logger.setLevel(LOG_LEVEL)
+
+# Create a rotating file handler
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=LOG_MAX_BYTES,
+    backupCount=LOG_BACKUP_COUNT
+)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+# Also add a console handler for immediate feedback
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
 
 class BankTransactionSyncer:
     def __init__(self):
@@ -278,22 +299,40 @@ class BankTransactionSyncer:
         """Prepare a record for Grist based on the table structure"""
         normalized_record = {}
         
+        # Define the mapping from Google Sheets field names to Grist field names
+        google_to_grist_map = {
+            'Transaction Date': 'Transaction_Date',
+            'Transaction Description': 'Transaction_Description',
+            'Transaction Amount': 'Transaction_Amount',
+            'Reference No.': 'Reference_No',
+            'Value Date': 'Value_Date'
+        }
+
         for field_name, field_value in sheet_record.items():
             if field_value is None or field_value == '':
                 continue
                 
-            # Check if this field exists in Grist structure
             grist_field = None
-            for grist_col_id, grist_col_info in grist_structure.items():
-                if grist_col_info['label'] == field_name or grist_col_id == field_name:
-                    grist_field = grist_col_id
-                    break
+            # Check if the field is in our explicit mapping
+            if field_name in google_to_grist_map:
+                grist_field = google_to_grist_map[field_name]
+            else:
+                # If not in explicit mapping, try to find it in Grist structure by label or ID
+                for grist_col_id, grist_col_info in grist_structure.items():
+                    if grist_col_info['label'] == field_name or grist_col_id == field_name:
+                        grist_field = grist_col_id
+                        break
             
             if not grist_field:
-                logger.warning(f"Field '{field_name}' not found in Grist structure, skipping")
+                logger.warning(f"Field '{field_name}' not found in Grist structure or explicit mapping, skipping")
                 continue
             
-            # Normalize based on Grist field type
+            # Get Grist field type from the structure (assuming grist_field is now valid)
+            # We need to ensure grist_field exists in grist_structure before accessing its type
+            if grist_field not in grist_structure:
+                logger.warning(f"Mapped Grist field '{grist_field}' for Google Sheets field '{field_name}' not found in Grist structure, skipping")
+                continue
+
             grist_type = grist_structure[grist_field]['type']
             
             if grist_type == 'Date':
@@ -321,7 +360,7 @@ class BankTransactionSyncer:
             }
             
             # Log the payload for debugging
-            logger.info(f"Sending payload to Grist: {json.dumps(payload, indent=2)}")
+            logger.debug(f"Sending payload to Grist: {json.dumps(payload, indent=2)}")
             
             response = requests.post(
                 f"{self.grist_base_url}/records",
@@ -431,11 +470,11 @@ class BankTransactionSyncer:
             for i, sheet_record in enumerate(sheet_data):
                 try:
                     logger.info(f"Processing record {i+1}/{len(sheet_data)}")
-                    logger.info(f"Original record: {sheet_record}")
+                    logger.debug(f"Original record: {sheet_record}") # Changed to debug
                     
                     # Prepare record for Grist
                     normalized_record = self.prepare_grist_record(sheet_record, grist_structure)
-                    logger.info(f"Normalized record: {normalized_record}")
+                    logger.debug(f"Normalized record: {normalized_record}") # Changed to debug
                     
                     if not normalized_record:
                         logger.warning("No valid fields found in record, skipping")
@@ -553,21 +592,9 @@ def main():
             logger.error("Grist connection test failed. Please check your configuration.")
             return 1
         
-        # Ask user if they want to run in test mode
-        test_mode_input = input("\nDo you want to run in test mode (process only 3 records)? (y/n): ").lower().strip()
-        test_mode = test_mode_input == 'y'
-        
-        if test_mode:
-            logger.info("Running in test mode...")
-        else:
-            # Ask user if they want to continue with full sync
-            user_input = input("\nDo you want to continue with the full sync? (y/n): ").lower().strip()
-            if user_input != 'y':
-                logger.info("Sync cancelled by user")
-                return 0
-        
-        # Run sync
-        syncer.sync_transactions(test_mode=test_mode)
+        # Run sync without asking for user input (always full sync)
+        logger.info("Running full sync...")
+        syncer.sync_transactions(test_mode=False) # Always run in full sync mode
         
     except Exception as e:
         logger.error(f"Sync failed: {e}")
