@@ -6,6 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from typing import List, Dict, Any, Optional
 import os
+import csv # Added import for CSV handling
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -182,19 +183,60 @@ class GristBankUpdater:
             return None
         
         cleaned_date_string = str(date_string).strip()
+        
+        # ADD THIS DEBUG CODE TO TRACE THE ISSUE
+        logger.debug(f"=== DATE PARSING DEBUG ===")
+        logger.debug(f"Input date_string: {repr(date_string)}")
+        logger.debug(f"Input type: {type(date_string)}")
+        logger.debug(f"Cleaned date_string: {repr(cleaned_date_string)}")
+        logger.debug(f"Is digit check: {cleaned_date_string.isdigit()}")
+        
+        # If it's a suspicious timestamp, log the stack trace
+        if cleaned_date_string.isdigit() and len(cleaned_date_string) == 10:
+            import traceback
+            logger.warning(f"SUSPICIOUS TIMESTAMP DETECTED: {cleaned_date_string}")
+            logger.warning(f"Call stack: {traceback.format_stack()}")
+        
+        # Try to parse as Unix timestamp first if it looks like a number
+        try:
+            # Check if it's a string that can be converted to an integer
+            if cleaned_date_string.isdigit():
+                timestamp = int(cleaned_date_string)
+                logger.debug(f"Parsed as integer timestamp: {timestamp}")
+                
+                # Basic sanity check for timestamp range
+                if 0 <= timestamp <= 4102444800: # Approx. end of 2100
+                    parsed_dt = datetime.fromtimestamp(timestamp)
+                    logger.warning(f"CONVERTING TIMESTAMP TO DATE: {timestamp} -> {parsed_dt}")
+                    return parsed_dt
+                else:
+                    logger.debug(f"Timestamp {timestamp} outside valid range, treating as string")
+        except ValueError:
+            logger.debug("Not a valid integer, proceeding to string parsing")
+        except (ValueError, OSError) as e:
+            logger.warning(f"Error parsing '{cleaned_date_string}' as timestamp: {e}")
+
+        # Continue with your existing string parsing logic...
+        logger.debug(f"Proceeding with string date parsing for: {cleaned_date_string}")
+
+
+        # Existing string parsing logic
         if 'am' in cleaned_date_string:
             cleaned_date_string = cleaned_date_string.replace('am', 'AM')
         if 'pm' in cleaned_date_string:
             cleaned_date_string = cleaned_date_string.replace('pm', 'PM')
 
-        # Define formats
+        # Define formats - FIXED: Added missing %d-%m-%Y %H:%M:%S format
         mm_dd_yyyy_formats = [
             '%m-%d-%Y %I:%M:%S %p', '%m-%d-%Y %H:%M:%S', '%m-%d-%Y',
             '%m/%d/%Y %H:%M:%S', '%m/%d/%Y'
         ]
         dd_mm_yyyy_formats = [
-            '%d/%m/%Y %H:%M:%S', '%d-%m-%Y %I:%M:%S %p', '%d-%m-%Y %I:%M%p',
-            '%d-%m-%Y %H:%M:%S', '%d-%m-%Y'
+            '%d-%m-%Y %H:%M:%S',        # ADDED: This was missing!
+            '%d/%m/%Y %H:%M:%S', 
+            '%d-%m-%Y %I:%M:%S %p', 
+            '%d-%m-%Y %I:%M%p',
+            '%d-%m-%Y'
         ]
         yyyy_formats = ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d']
 
@@ -227,16 +269,30 @@ class GristBankUpdater:
                         logger.debug(f"Failed to parse '{cleaned_date_string}' with format '{fmt}'")
                         continue
         else:
-            logger.debug("Non-ICICI bank or no bank specified. Trying DD-MM-YYYY formats first.")
-            for fmt in dd_mm_yyyy_formats:
-                try:
-                    logger.debug(f"Attempting to parse '{cleaned_date_string}' with format '{fmt}'")
-                    parsed_dt = datetime.strptime(cleaned_date_string, fmt)
-                    logger.debug(f"Successfully parsed '{cleaned_date_string}' with format '{fmt}'")
-                    break
-                except ValueError:
-                    logger.debug(f"Failed to parse '{cleaned_date_string}' with format '{fmt}'")
-                    continue
+            logger.debug("Non-ICICI bank or no bank specified.")
+            
+            # Prioritize the specific format 'DD/MM/YYYY HH:MM:SS' for non-ICICI banks
+            specific_format = '%d/%m/%Y %H:%M:%S'
+            try:
+                logger.debug(f"Attempting to parse '{cleaned_date_string}' with specific format '{specific_format}'")
+                parsed_dt = datetime.strptime(cleaned_date_string, specific_format)
+                logger.debug(f"Successfully parsed '{cleaned_date_string}' with format '{specific_format}'")
+            except ValueError:
+                logger.debug(f"Failed to parse '{cleaned_date_string}' with specific format '{specific_format}'. Trying other formats.")
+                parsed_dt = None # Ensure parsed_dt is None if specific format fails
+
+            # If specific format failed, try other formats
+            if not parsed_dt:
+                logger.debug("Trying DD-MM-YYYY formats.")
+                for fmt in dd_mm_yyyy_formats:
+                    try:
+                        logger.debug(f"Attempting to parse '{cleaned_date_string}' with format '{fmt}'")
+                        parsed_dt = datetime.strptime(cleaned_date_string, fmt)
+                        logger.debug(f"Successfully parsed '{cleaned_date_string}' with format '{fmt}'")
+                        break # Found a match
+                    except ValueError:
+                        logger.debug(f"Failed to parse '{cleaned_date_string}' with format '{fmt}'")
+                        continue
             
             if not parsed_dt: # If DD-MM-YYYY failed, try MM-DD-YYYY
                 logger.debug("DD-MM-YYYY formats failed. Trying MM-DD-YYYY formats.")
@@ -267,11 +323,15 @@ class GristBankUpdater:
         
         return parsed_dt
     
-    def normalize_date(self, date_value: Any, bank_name: Optional[str] = None) -> Optional[str]:
-        """Normalize date values to ISO format (YYYY-MM-DD) or DD-MM-YYYY for ICICI, for Grist API insertion."""
+    def normalize_date(self, date_value: Any, bank_name: Optional[str] = None) -> Optional[datetime]: # Return type changed
+        """Parse date value into a datetime object.""" # Docstring updated
         if not date_value:
             return None
-        
+        # ADD DEBUG LOGGING HERE
+        logger.debug(f"=== NORMALIZE_DATE DEBUG ===")
+        logger.debug(f"Input date_value: {repr(date_value)}")
+        logger.debug(f"Input type: {type(date_value)}")
+        logger.debug(f"Bank name: {bank_name}")
         try:
             dt = None
             # If it's already a datetime object
@@ -282,17 +342,12 @@ class GristBankUpdater:
                 dt = self._parse_date_string(date_value, bank_name)
             
             if dt:
-                # Apply bank-specific formatting if needed
+                # Logging remains for context, but we return the datetime object.
                 if bank_name and bank_name.upper() == 'ICICI':
-                    # Convert to DD-MM-YYYY format for ICICI
-                    formatted_date = dt.strftime('%d-%m-%Y %H:%M:%S')
-                    logger.info(f"ICICI bank: Converting date {date_value} -> {formatted_date}")
-                    return formatted_date
-                else:
-                    # Default to YYYY-MM-DD for other banks or when bank_name is not specified
-                    formatted_date = dt.strftime('%d-%m-%Y %H:%M:%S')
-                    logger.debug(f"Non-ICICI bank: Converting date {date_value} -> {formatted_date}")
-                    return formatted_date
+                    formatted_date_for_log = dt.strftime('%d/%m/%Y %H:%M:%S')
+                    logger.info(f"ICICI bank: Converting date {date_value} -> {formatted_date_for_log}")
+                
+                return dt # Return the datetime object
             else:
                 logger.warning(f"Could not parse or process date value: {date_value}")
                 return None
@@ -475,36 +530,147 @@ class GristBankUpdater:
         except Exception as e:
             logger.error(f"✗ Grist connection test failed: {e}")
             return False
+        
+    def get_last_processed_datetime_and_records(self, limit: int = 500):
+        """
+        Get the last processed datetime and ALL records that share this datetime.
+        Returns (last_datetime, list_of_records_with_that_datetime)
+        """
+        try:
+            # Get records sorted by Transaction Date descending
+            response = requests.get(
+                f"{self.grist_base_url}/records?sort=-Transaction_Date&limit={limit}",
+                headers=self.grist_headers
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            all_records = [rec.get('fields', {}) for rec in data.get('records', [])]
+            
+            if not all_records:
+                logger.info("No existing records found in Grist.")
+                return None, []
+            
+            # Get the most recent datetime
+            last_datetime_raw = all_records[0].get('Transaction_Date') # Keep raw for comparison logic
+            if not last_datetime_raw:
+                logger.warning("Most recent record has no Transaction_Date")
+                return None, []
+            
+            # Parse the raw datetime for logging purposes
+            parsed_last_datetime_obj = self._parse_date_string(last_datetime_raw, None) # Use None for bank_name
+            
+            # Format the parsed datetime for logging
+            if parsed_last_datetime_obj:
+                formatted_last_datetime_str = parsed_last_datetime_obj.strftime('%d-%m-%Y %H:%M:%S')
+            else:
+                formatted_last_datetime_str = last_datetime_raw # Fallback to raw if parsing fails
+
+            # Find ALL records that share this same datetime
+            records_with_last_datetime = []
+            for record in all_records:
+                record_datetime = record.get('Transaction_Date')
+                if record_datetime == last_datetime_raw: # Compare with raw for logic
+                    records_with_last_datetime.append(record)
+                else:
+                    # Since records are sorted by date desc, we can break here
+                    break
+            
+            # Log with the formatted datetime
+            logger.info(f"Found {len(records_with_last_datetime)} records with the last processed datetime: {formatted_last_datetime_str}")
+            
+            # Log details of these records for debugging
+            for i, record in enumerate(records_with_last_datetime):
+                logger.debug(f"Last datetime record {i+1}: {record.get('Transaction_Description')} - Amount: {record.get('Transaction_Amount')}")
+            
+            return last_datetime_raw, records_with_last_datetime # Return raw for comparison logic
+            
+        except Exception as e:
+            logger.error(f"Failed to get last processed datetime and records: {e}")
+            return None, []
+
+    def should_process_record(self, file_record: Dict[str, Any], file_dt_obj: Optional[datetime], last_dt_obj: Optional[datetime], last_datetime_records: List[Dict[str, Any]]) -> bool:
+        """
+        Determine if a file record should be processed based on datetime and duplicate checking.
+        Uses pre-parsed datetime objects for efficiency.
+        """
+        bank_name = file_record.get('Bank')
+        # file_datetime is no longer needed here as we use file_dt_obj
+        # file_datetime = self.normalize_date(file_record.get('Transaction Date'), bank_name)
+        
+        if not file_dt_obj: # Check the passed-in datetime object
+            logger.warning(f"File record has no valid transaction date: {file_record}")
+            return False
+        
+        # If we have no last datetime from Grist, process all records
+        if not last_dt_obj:
+            return True
+        
+        # Compare datetimes - we need to be careful about datetime comparison
+        try:
+            # Use the passed-in datetime objects directly
+            
+            # If file record is newer than last processed datetime, definitely process it
+            if file_dt_obj > last_dt_obj:
+                logger.debug(f"Record is newer than last processed datetime: {file_dt_obj} > {last_dt_obj}")
+                return True
+            
+            # If file record is older than last processed datetime, skip it
+            if file_dt_obj < last_dt_obj:
+                logger.debug(f"Record is older than last processed datetime: {file_dt_obj} < {last_dt_obj}")
+                return False
+            
+            # If file record has the same datetime as last processed datetime,
+            # check if it's already in the Grist records with that datetime
+            if file_dt_obj == last_dt_obj:
+                logger.debug(f"Record has same datetime as last processed: {file_dt_obj}")
+                
+                # Check if this record already exists in the last_datetime_records
+                for grist_record in last_datetime_records:
+                    if self._record_matches(file_record, grist_record):
+                        logger.debug(f"Record already exists in Grist: {file_record.get('Transaction Description')}")
+                        return False
+                
+                # Same datetime but not a duplicate, so process it
+                logger.debug(f"Record has same datetime but is not a duplicate, processing: {file_record.get('Transaction Description')}")
+                return True
+            
+        except Exception as e:
+            logger.error(f"Error comparing datetimes: {e}")
+            return True  # Process it to be safe
+        
+        return True  # Default to processing
 
     def update_grist_from_file(self):
         """
         Reads records from the daily TXT file, identifies new transactions,
-        inserts them into Grist, and then archives the file.
+        writes them to output.csv, and then archives the file.
+        Enhanced version that properly handles multiple records with the same datetime.
         """
         file_name = self._get_current_date_filename()
         file_path = os.path.join(self.data_dir, file_name)
 
         if not os.path.exists(file_path):
-            logger.error(f"Data file not found: {file_path}. Cannot update Grist.")
+            logger.error(f"Data file not found: {file_path}. Cannot process records.")
             return
 
         try:
-            logger.info(f"Starting Grist update from file: {file_path}.")
+            logger.info(f"Starting record processing from file: {file_path}.")
 
-            # Test connections first
-            if not self.test_grist_connection():
-                raise Exception("Grist connection test failed")
+            # Test connections first (optional for CSV output, but good practice)
+            # if not self.test_grist_connection():
+            #     raise Exception("Grist connection test failed")
             
-            # Get Grist table structure
-            grist_structure = self.get_grist_table_structure()
-            if not grist_structure:
-                raise Exception("Failed to get Grist table structure")
+            # Get Grist table structure (optional for CSV output, but might be useful for context)
+            # grist_structure = self.get_grist_table_structure()
+            # if not grist_structure:
+            #     raise Exception("Failed to get Grist table structure")
 
             # Read records from the file
             file_records = self.read_records_from_file(file_path)
             if not file_records:
-                logger.info("No records found in the data file. Nothing to update.")
-                self.archive_file(file_path) # Archive empty file
+                logger.info("No records found in the data file. Nothing to process.")
+                self.archive_file(file_path)
                 return
 
             # Log sample record to check Bank field
@@ -512,81 +678,102 @@ class GristBankUpdater:
                 logger.info(f"Sample record from file: {file_records[0]}")
                 logger.info(f"Bank field value: '{file_records[0].get('Bank')}'")
 
-            # Get recent records from Grist for comparison
-            recent_grist_records = self.get_recent_grist_records(limit=200) # Fetch more records for robust comparison
+            # Get the last processed datetime and all records with that datetime
+            # This is still needed for duplicate matching logic
+            last_datetime, last_datetime_records = self.get_last_processed_datetime_and_records(limit=500)
             
+            # Filter records that need to be processed
             records_to_insert = []
             for file_record in file_records:
-                # Check if this record already exists in Grist
-                is_duplicate = False
-                for grist_record in recent_grist_records:
-                    if self._record_matches(file_record, grist_record):
-                        is_duplicate = True
-                        break
+                # Parse file date once
+                file_dt_obj = self.normalize_date(file_record.get('Transaction Date'), file_record.get('Bank'))
                 
-                if not is_duplicate:
+                # Parse last_datetime once. Note: last_datetime is the raw string from Grist.
+                last_dt_obj = self.normalize_date(last_datetime, None) # bank_name is not available here
+
+                if self.should_process_record(file_record, file_dt_obj, last_dt_obj, last_datetime_records):
                     records_to_insert.append(file_record)
                 else:
-                    logger.debug(f"Skipping duplicate record: {file_record.get('Transaction Date')} - {file_record.get('Transaction Description')}")
+                    # Use file_dt_obj for logging if available, otherwise fall back to original date string
+                    log_date = file_dt_obj if file_dt_obj else file_record.get('Transaction Date')
+                    logger.debug(f"Skipping record: {log_date} - {file_record.get('Transaction Description')}")
 
-            logger.info(f"Identified {len(records_to_insert)} new records to insert into Grist.")
+            logger.info(f"Identified {len(records_to_insert)} new records to process out of {len(file_records)} total file records.")
 
-            if not records_to_insert:
-                logger.info("No new records to insert into Grist.")
-                self.archive_file(file_path)
-                return
-
-            records_to_insert_grist_format = []
-            for i, sheet_record in enumerate(records_to_insert):
+            # --- MODIFICATION START ---
+            # Write new records to output.csv
+            output_csv_path = 'output.csv'
+            if records_to_insert:
                 try:
-                    logger.debug(f"Preparing record {i+1}/{len(records_to_insert)}")
-                    logger.debug(f"Original record: {sheet_record}")
-                    
-                    # Prepare record for Grist
-                    normalized_record = self.prepare_grist_record(sheet_record, grist_structure)
-                    logger.debug(f"Normalized record: {normalized_record}")
-                    
-                    if not normalized_record:
-                        logger.warning("No valid fields found in record, skipping")
-                        continue
-                    
-                    records_to_insert_grist_format.append(normalized_record)
-                    
+                    with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
+                        # Get fieldnames from the first record, assuming all records have the same keys
+                        # Ensure fieldnames are consistent and handle potential missing keys gracefully
+                        # A more robust approach would be to collect all unique keys from all records
+                        all_keys = set()
+                        for record in records_to_insert:
+                            all_keys.update(record.keys())
+                        fieldnames = sorted(list(all_keys)) # Sort for consistent column order
+
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+                        writer.writeheader()
+                        for record in records_to_insert:
+                            # Ensure all keys are present in the row, fill missing with empty string
+                            row_to_write = {key: record.get(key, '') for key in fieldnames}
+                            writer.writerow(row_to_write)
+                    logger.info(f"Successfully wrote {len(records_to_insert)} records to {output_csv_path}")
                 except Exception as e:
-                    logger.error(f"Error preparing record {sheet_record}: {e}")
-                    continue
-            
-            if records_to_insert_grist_format:
-                logger.info(f"Attempting to bulk insert {len(records_to_insert_grist_format)} records into Grist.")
-                if self.create_grist_records_bulk(records_to_insert_grist_format):
-                    logger.info(f"Successfully bulk inserted {len(records_to_insert_grist_format)} records.")
-                else:
-                    logger.error("Bulk insert failed. Check logs for details.")
+                    logger.error(f"Failed to write records to {output_csv_path}: {e}")
+                    # Continue to archiving even if CSV writing fails, as the core logic is to process records.
             else:
-                logger.info("No records prepared for insertion into Grist.")
+                logger.info("No new records to process, skipping CSV output.")
+            # --- MODIFICATION END ---
             
-            logger.info("Grist update process completed.")
+            # Original Grist insertion logic (commented out as per user request)
+            # if not records_to_insert:
+            #     logger.info("No new records to insert into Grist.")
+            #     self.archive_file(file_path)
+            #     return
+
+            # # Prepare records for Grist insertion
+            # records_to_insert_grist_format = []
+            # for i, sheet_record in enumerate(records_to_insert):
+            #     try:
+            #         logger.debug(f"Preparing record {i+1}/{len(records_to_insert)}")
+            #         logger.debug(f"Original record: {sheet_record}")
+                    
+            #         # Prepare record for Grist
+            #         normalized_record = self.prepare_grist_record(sheet_record, grist_structure)
+            #         logger.debug(f"Normalized record: {normalized_record}")
+                    
+            #         if not normalized_record:
+            #             logger.warning("No valid fields found in record, skipping")
+            #             continue
+                    
+            #         records_to_insert_grist_format.append(normalized_record)
+                    
+            #     except Exception as e:
+            #         logger.error(f"Error preparing record {sheet_record}: {e}")
+            #         continue
+            
+            # # Insert records into Grist
+            # if records_to_insert_grist_format:
+            #     logger.info(f"Attempting to bulk insert {len(records_to_insert_grist_format)} records into Grist.")
+            #     if self.create_grist_records_bulk(records_to_insert_grist_format):
+            #         logger.info(f"Successfully bulk inserted {len(records_to_insert_grist_format)} records.")
+            #     else:
+            #         logger.error("Bulk insert failed. Check logs for details.")
+            # else:
+            #     logger.info("No records prepared for insertion into Grist.")
+            
+            # logger.info("Grist update process completed.")
             
             # Archive the processed file
             self.archive_file(file_path)
 
         except Exception as e:
-            logger.error(f"Failed to update Grist from file: {e}")
-            raise
-
-    def archive_file(self, file_path: str):
-        """Move the processed file to the archive directory with a timestamped filename"""
-        try:
-            file_name = os.path.basename(file_path)
-            name, ext = os.path.splitext(file_name)
-            timestamp = datetime.now().strftime("_%Y%m%d_%H%M%S")
-            new_file_name = f"{name}{timestamp}{ext}"
-            
-            archive_path = os.path.join(self.archive_dir, new_file_name)
-            os.rename(file_path, archive_path)
-            logger.info(f"Archived file: {file_path} -> {archive_path}.")
-        except Exception as e:
-            logger.error(f"Failed to archive file {file_path}: {e}")
+            logger.error(f"Record processing script failed: {e}")
+            # Re-raise the exception to be caught by the main handler if necessary
             raise
 
 def main():

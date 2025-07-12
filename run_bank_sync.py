@@ -68,12 +68,12 @@ def main():
     logger.info(f"Starting BankSync wrapper script.")
 
     if os.path.exists(file_path):
-        logger.info(f"Data file '{current_date_filename}' already exists. Proceeding with Grist update.")
-        if not run_script('gristbankupdater.py'):
-            logger.error("Grist update failed. Exiting wrapper script.")
+        logger.info(f"Data file '{current_date_filename}' already exists. Proceeding with Grist record creation.")
+        if not run_script('createGristRecords.py'):
+            logger.error("createGristRecords.py failed. Exiting wrapper script.")
             return 1
     else:
-        logger.info(f"Data file '{current_date_filename}' does not exist. Fetching data from Google Sheets and then updating Grist.")
+        logger.info(f"Data file '{current_date_filename}' does not exist. Fetching data from Google Sheets and then creating Grist records.")
         if not run_script('BankSync.py'):
             logger.error("BankSync.py failed. Exiting wrapper script.")
             return 1
@@ -83,8 +83,8 @@ def main():
             logger.error(f"BankSync.py did not create the expected file: {file_path}. Exiting wrapper script.")
             return 1
         
-        if not run_script('gristbankupdater.py'):
-            logger.error("Grist update failed. Exiting wrapper script.")
+        if not run_script('createGristRecords.py'):
+            logger.error("createGristRecords.py failed. Exiting wrapper script.")
             return 1
     
     logger.info("BankSync wrapper script completed successfully.")

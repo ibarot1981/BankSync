@@ -7,3 +7,5 @@ creds.txt
 *.log
 archive/
 data/
+*.log*
+output.csv
