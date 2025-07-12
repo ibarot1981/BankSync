@@ -427,7 +427,10 @@ class GristCSVUploader:
             return False
 
         original_filename = os.path.basename(self.csv_file_path)
-        uploaded_filename = f"Uploaded-{original_filename}"
+        name_without_ext, ext = os.path.splitext(original_filename)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        uploaded_filename = f"Uploaded-{name_without_ext}_{timestamp}{ext}"
         
         os.makedirs(self.archive_dir, exist_ok=True)
         
