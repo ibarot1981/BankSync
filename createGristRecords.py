@@ -83,8 +83,8 @@ class GristRecordCreator:
         }
 
     def _format_datetime_for_output(self, dt_obj: datetime) -> str:
-        """Formats a datetime object to MM/DD/YYYY HH:MM:SS string."""
-        return dt_obj.strftime("%m/%d/%Y %H:%M:%S")
+        """Formats a datetime object to DD/MM/YYYY HH:MM:SS string."""
+        return dt_obj.strftime("%d/%m/%Y %H:%M:%S")
 
     def _get_current_date_filename(self) -> str:
         """Generate filename based on current date in ddmmyy.txt format"""
@@ -114,7 +114,7 @@ class GristRecordCreator:
             # More lenient timestamp range - roughly 1970 to 2100
             if 0 <= timestamp <= 4102444800:
                 parsed_dt = datetime.fromtimestamp(timestamp)
-                logger.debug(f"Successfully converted Unix timestamp {timestamp} to datetime: {parsed_dt}")
+                logger.debug(f"Successfully converted Unix timestamp {timestamp} to datetime: {parsed_dt.strftime('%d/%m/%Y %H:%M:%S')}")
                 return parsed_dt
             else:
                 logger.warning(f"Unix timestamp {timestamp} is outside reasonable range (1970-2100)")
@@ -199,10 +199,16 @@ class GristRecordCreator:
                 return date_value
             elif isinstance(date_value, (int, float)):
                 # Handle numeric timestamps
-                return self._parse_unix_timestamp(str(int(date_value)))
+                parsed_dt = self._parse_unix_timestamp(str(int(date_value)))
+                if parsed_dt:
+                    logger.debug(f"Converted numeric timestamp {date_value} to DD/MM/YYYY: {parsed_dt.strftime('%d/%m/%Y %H:%M:%S')}")
+                return parsed_dt
             elif isinstance(date_value, str):
                 logger.debug(f"Parsing date string: '{date_value}' for bank: {bank_name}")
-                return self._parse_date_string(date_value, bank_name)
+                parsed_dt = self._parse_date_string(date_value, bank_name)
+                if parsed_dt:
+                    logger.debug(f"Converted date string '{date_value}' to DD/MM/YYYY: {parsed_dt.strftime('%d/%m/%Y %H:%M:%S')}")
+                return parsed_dt
             else:
                 logger.warning(f"Unsupported date value type: {type(date_value)} - {date_value}")
                 return None

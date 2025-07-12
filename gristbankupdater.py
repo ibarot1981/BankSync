@@ -232,11 +232,12 @@ class GristBankUpdater:
             '%m/%d/%Y %H:%M:%S', '%m/%d/%Y'
         ]
         dd_mm_yyyy_formats = [
-            '%d-%m-%Y %H:%M:%S',        # ADDED: This was missing!
+            '%d-%m-%Y %H:%M:%S',
             '%d/%m/%Y %H:%M:%S', 
             '%d-%m-%Y %I:%M:%S %p', 
             '%d-%m-%Y %I:%M%p',
-            '%d-%m-%Y'
+            '%d-%m-%Y',
+            '%d/%m/%y' # Added for DD/MM/YY format like 11/7/25
         ]
         yyyy_formats = ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d']
 

@@ -87,6 +87,12 @@ def main():
             logger.error("createGristRecords.py failed. Exiting wrapper script.")
             return 1
     
+    # After createGristRecords.py, run uploadToGrist.py
+    logger.info("createGristRecords.py completed. Now running uploadToGrist.py...")
+    if not run_script('uploadToGrist.py'):
+        logger.error("uploadToGrist.py failed. Exiting wrapper script.")
+        return 1
+
     logger.info("BankSync wrapper script completed successfully.")
     return 0
 
