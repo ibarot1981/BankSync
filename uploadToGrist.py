@@ -189,6 +189,24 @@ class GristCSVUploader:
             logger.warning(f"Failed to normalize amount {amount_value}: {e}")
             return None
 
+    def normalize_integer(self, int_value: Any) -> Optional[int]:
+        """Normalize integer values to int"""
+        if not int_value:
+            return None
+        
+        try:
+            if isinstance(int_value, str):
+                int_str = int_value.strip()
+                if not int_str:
+                    return None
+                return int(int_str)
+            
+            return int(int_value)
+            
+        except Exception as e:
+            logger.warning(f"Failed to normalize integer {int_value}: {e}")
+            return None
+
     def get_grist_table_structure(self) -> Dict[str, Any]:
         """Get Grist table structure to understand expected field types"""
         try:
@@ -229,7 +247,8 @@ class GristCSVUploader:
             'Transaction Description': 'Transaction_Description',
             'Transaction Amount': 'Transaction_Amount',
             'Reference No.': 'Reference_No',
-            'Value Date': 'Value_Date'
+            'Value Date': 'Value_Date',
+            'GSheets_RowNum': 'GSheets_RowNum'
         }
 
         bank_name = sheet_record.get('Bank')
@@ -272,6 +291,9 @@ class GristCSVUploader:
                 logger.info(f"Date field '{field_name}': {field_value} -> {normalized_value} (Bank: {bank_name})")
             elif grist_type == 'Numeric':
                 normalized_value = self.normalize_amount(field_value)
+            elif grist_type == 'Int' or field_name == 'GSheets_RowNum':
+                normalized_value = self.normalize_integer(field_value)
+                logger.info(f"Integer field '{field_name}': {field_value} -> {normalized_value}")
             else:
                 normalized_value = str(field_value) if field_value else None
             

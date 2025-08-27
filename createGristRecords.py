@@ -235,39 +235,15 @@ class GristRecordCreator:
             logger.warning(f"Failed to normalize amount {amount_value}: {e}")
             return None
 
-    def _record_matches(self, file_record: Dict[str, Any], grist_record: Dict[str, Any]) -> bool:
-        """Compare a record from the file with a record from Grist based on key fields"""
-        bank_name = file_record.get('Bank')
-        
-        file_date = self.normalize_date(file_record.get('Transaction Date'), bank_name)
-        file_desc = file_record.get('Transaction Description')
-        file_amount = self.normalize_amount(file_record.get('Transaction Amount'))
-
-        grist_date = self.normalize_date(grist_record.get('Transaction_Date'), None)
-        grist_desc = grist_record.get('Transaction_Description')
-        grist_amount = self.normalize_amount(grist_record.get('Transaction_Amount'))
-        
-        if any(val is None for val in [file_date, file_desc, file_amount, grist_date, grist_desc, grist_amount]):
-            logger.debug(f"Skipping record comparison due to missing/invalid data")
-            return False
-
-        matches = (file_date == grist_date and
-                  file_desc == grist_desc and
-                  file_amount == grist_amount)
-        
-        if matches:
-            logger.debug(f"Record match found: {file_desc} - {file_date} - {file_amount}")
-        
-        return matches
-
-    def get_last_processed_datetime_and_records(self, limit: int = 500):
+    def get_latest_row_number_from_grist(self) -> Optional[int]:
         """
-        Get the last processed datetime and ALL records that share this datetime from Grist.
-        Returns (last_datetime_obj, list_of_records_with_that_datetime)
+        Get the latest (highest) row number from Grist's GSheets_RowNum field.
+        Returns None if no records exist or if the field is not found.
         """
         try:
-            url = f"{self.grist_base_url}/records?sort=-Transaction_Date&limit={limit}"
-            logger.debug(f"Fetching records from Grist URL: {url}")
+            # Sort by GSheets_RowNum in descending order and get the top record
+            url = f"{self.grist_base_url}/records?sort=-GSheets_RowNum&limit=1"
+            logger.debug(f"Fetching latest row number from Grist URL: {url}")
             
             response = requests.get(url, headers=self.grist_headers)
             
@@ -275,103 +251,74 @@ class GristRecordCreator:
             
             if response.status_code != 200:
                 logger.error(f"Grist API returned error: {response.status_code} - {response.text}")
-                return None, []
+                return None
 
             response.raise_for_status()
             
             data = response.json()
-            all_records = [rec.get('fields', {}) for rec in data.get('records', [])]
+            records = data.get('records', [])
             
-            if not all_records:
+            if not records:
                 logger.info("No existing records found in Grist")
-                return None, []
+                return None
             
             # Get the most recent record
-            latest_record = all_records[0]
-            latest_date_raw = latest_record.get('Transaction_Date')
+            latest_record = records[0]
+            fields = latest_record.get('fields', {})
+            latest_row_num = fields.get('GSheets_RowNum')
             
-            logger.debug(f"Latest Grist record raw date: {latest_date_raw}")
+            if latest_row_num is None:
+                logger.warning("Most recent record in Grist has no 'GSheets_RowNum' field")
+                return None
             
-            if not latest_date_raw:
-                logger.warning("Most recent record in Grist has no 'Transaction_Date' field")
-                return None, []
-            
-            # Parse the latest datetime
-            latest_datetime_obj = self.normalize_date(latest_date_raw, None)
-            if not latest_datetime_obj:
-                logger.error(f"Could not parse latest Grist transaction date: {latest_date_raw}")
-                return None, []
-            
-            logger.info(f"Latest Grist transaction datetime: {latest_datetime_obj}")
-            
-            # Log sample record for debugging
-            formatted_date = self._format_datetime_for_output(latest_datetime_obj)
-            logger.debug(f"Sample Grist record: Transaction_Date='{formatted_date}', Description='{latest_record.get('Transaction_Description', 'N/A')}'")
-
-            # Find all records with the same datetime
-            records_with_same_datetime = []
-            for record in all_records:
-                record_date_raw = record.get('Transaction_Date')
-                record_datetime_obj = self.normalize_date(record_date_raw, None)
-                
-                if record_datetime_obj and record_datetime_obj == latest_datetime_obj:
-                    records_with_same_datetime.append(record)
-                elif record_datetime_obj and record_datetime_obj < latest_datetime_obj:
-                    # Records are sorted by date desc, so we can break here
-                    break
-            
-            logger.info(f"Found {len(records_with_same_datetime)} records with the latest datetime")
-            
-            return latest_datetime_obj, records_with_same_datetime
+            try:
+                latest_row_num = int(latest_row_num)
+                logger.info(f"Latest row number from Grist: {latest_row_num}")
+                return latest_row_num
+            except (ValueError, TypeError):
+                logger.error(f"Could not convert GSheets_RowNum to integer: {latest_row_num}")
+                return None
             
         except requests.RequestException as e:
-            logger.error(f"Network error while fetching from Grist: {e}")
-            return None, []
+            logger.error(f"Network error while fetching latest row number from Grist: {e}")
+            return None
         except Exception as e:
-            logger.error(f"Unexpected error while fetching from Grist: {e}")
-            return None, []
+            logger.error(f"Unexpected error while fetching latest row number from Grist: {e}")
+            return None
 
-    def should_process_record(self, file_record: Dict[str, Any], file_dt_obj: Optional[datetime], last_dt_obj: Optional[datetime], last_datetime_records: List[Dict[str, Any]]) -> bool:
+    def should_process_record_by_row_num(self, file_record: Dict[str, Any], latest_grist_row_num: Optional[int]) -> bool:
         """
-        Determine if a file record should be processed based on datetime and duplicate checking.
+        Determine if a file record should be processed based on Row_Num field.
+        Process if Row_Num is greater than the latest row number in Grist.
         """
-        if not file_dt_obj:
-            logger.warning(f"File record has no valid transaction date, skipping: {file_record.get('Transaction Description', 'Unknown')}")
-            return False
+        row_num_value = file_record.get('Row_Num')
         
-        # If no last datetime from Grist, process all records
-        if not last_dt_obj:
-            logger.debug(f"No last Grist date found. Processing record: {file_record.get('Transaction Date')}")
+        if row_num_value is None:
+            logger.debug(f"File record has no Row_Num field. Will process: {file_record.get('Transaction Description', 'Unknown')}")
             return True
         
         try:
-            # If file record is newer than last processed datetime, process it
-            if file_dt_obj > last_dt_obj:
-                logger.debug(f"Record is newer ({file_dt_obj} > {last_dt_obj}). Processing: {file_record.get('Transaction Description', 'Unknown')}")
+            file_row_num = int(row_num_value)
+            logger.debug(f"File record Row_Num: {file_row_num}")
+            
+            # If no latest row number from Grist, process all records
+            if latest_grist_row_num is None:
+                logger.debug(f"No latest Grist row number found. Processing record with Row_Num: {file_row_num}")
                 return True
             
-            # If file record is older than last processed datetime, skip it
-            if file_dt_obj < last_dt_obj:
-                logger.debug(f"Record is older ({file_dt_obj} < {last_dt_obj}). Skipping: {file_record.get('Transaction Description', 'Unknown')}")
+            # Process if file row number is greater than latest Grist row number
+            if file_row_num > latest_grist_row_num:
+                logger.debug(f"Record Row_Num {file_row_num} is greater than latest Grist row {latest_grist_row_num}. Processing.")
+                return True
+            else:
+                logger.debug(f"Record Row_Num {file_row_num} is not greater than latest Grist row {latest_grist_row_num}. Skipping.")
                 return False
-            
-            # If file record has the same datetime, check for duplicates
-            if file_dt_obj == last_dt_obj:
-                logger.debug(f"Record has same datetime ({file_dt_obj}). Checking for duplicates: {file_record.get('Transaction Description', 'Unknown')}")
                 
-                for grist_record in last_datetime_records:
-                    if self._record_matches(file_record, grist_record):
-                        logger.debug(f"Duplicate found. Skipping: {file_record.get('Transaction Description', 'Unknown')}")
-                        return False
-                
-                logger.debug(f"Same datetime but not duplicate. Processing: {file_record.get('Transaction Description', 'Unknown')}")
-                return True
-            
-        except Exception as e:
-            logger.error(f"Error comparing datetimes for record {file_record.get('Transaction Description', 'Unknown')}: {e}")
-            return True  # Process it to be safe
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Could not convert Row_Num '{row_num_value}' to integer: {e}. Will process record.")
+            return True
         
-        return True
+        return False
 
     def archive_file(self, file_path: str):
         """Move the processed file to the archive directory"""
@@ -394,8 +341,8 @@ class GristRecordCreator:
 
     def create_grist_records_from_file(self):
         """
-        Read records from the daily TXT file, identify new transactions based on Grist's
-        last transaction date, and save them to a CSV file in ./UploadGrist.
+        Read records from the daily TXT file, identify new transactions based on Row_Num field,
+        and save them to a CSV file in ./UploadGrist with GSheets_RowNum field added.
         """
         file_name = self._get_current_date_filename()
         file_path = os.path.join(self.data_dir, file_name)
@@ -407,8 +354,8 @@ class GristRecordCreator:
         try:
             logger.info(f"Starting record processing from file: {file_path}")
 
-            # Fetch latest records from Grist
-            last_grist_dt_obj, last_grist_records = self.get_last_processed_datetime_and_records(limit=500)
+            # Get latest row number from Grist
+            latest_grist_row_num = self.get_latest_row_number_from_grist()
             
             # Read records from file
             file_records = self.read_records_from_file(file_path)
@@ -417,13 +364,10 @@ class GristRecordCreator:
                 self.archive_file(file_path)
                 return
 
-            # Process records
+            # Process records based on Row_Num
             records_to_output = []
             for file_record in file_records:
-                bank_name = file_record.get('Bank')
-                file_dt_obj = self.normalize_date(file_record.get('Transaction Date'), bank_name)
-                
-                if self.should_process_record(file_record, file_dt_obj, last_grist_dt_obj, last_grist_records):
+                if self.should_process_record_by_row_num(file_record, latest_grist_row_num):
                     records_to_output.append(file_record)
 
             logger.info(f"Identified {len(records_to_output)} new records to save to CSV")
@@ -435,10 +379,15 @@ class GristRecordCreator:
                 output_csv_path = os.path.join(self.upload_grist_dir, output_csv_file_name)
 
                 try:
-                    # Get all unique field names
+                    # Get all unique field names, exclude Row_Num and add GSheets_RowNum
                     all_keys = set()
                     for record in records_to_output:
                         all_keys.update(record.keys())
+                    
+                    # Remove Row_Num from fieldnames since we'll replace it with GSheets_RowNum
+                    all_keys.discard('Row_Num')
+                    # Add GSheets_RowNum to the field names
+                    all_keys.add('GSheets_RowNum')
                     fieldnames = sorted(list(all_keys))
 
                     with open(output_csv_path, 'w', newline='', encoding='utf-8') as csvfile:
@@ -447,6 +396,9 @@ class GristRecordCreator:
                         
                         for record in records_to_output:
                             row_to_write = {key: record.get(key, '') for key in fieldnames}
+                            
+                            # Add GSheets_RowNum field (using value from Row_Num)
+                            row_to_write['GSheets_RowNum'] = record.get('Row_Num', '')
                             
                             # Format Transaction Date for output
                             if 'Transaction Date' in row_to_write:

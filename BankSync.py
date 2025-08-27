@@ -80,7 +80,7 @@ class BankTransactionSyncer:
             raise
     
     def get_sheet_data(self) -> List[Dict[str, Any]]:
-        """Read data from Google Sheets, filtering for specific fields"""
+        """Read data from Google Sheets, filtering for specific fields and adding row numbers"""
         try:
             sheet = self.gc.open_by_key(self.gsheet_id)
             worksheet = sheet.worksheet(self.worksheet_name)
@@ -121,22 +121,28 @@ class BankTransactionSyncer:
             if not field_indices:
                 raise ValueError("None of the required fields were found in the sheet")
             
-            # Extract only the required fields from data rows
+            # Extract only the required fields from data rows and add actual Google Sheets row numbers
             records = []
-            for row_num, row_values in enumerate(all_values[1:], 2):  # Skip header row
+            
+            for row_index, row_values in enumerate(all_values[1:], 2):  # Skip header row, row_index starts from 2
                 # Skip empty rows
                 if not any(str(value).strip() for value in row_values):
                     continue
                 
                 # Create record with only required fields
                 record = {}
+                
+                # Add actual Google Sheets row number as the first field
+                record['Row_Num'] = row_index
+                
+                # Add other required fields
                 for field, col_index in field_indices.items():
                     value = row_values[col_index] if col_index < len(row_values) else ''
                     record[field] = value.strip() if value else None
                 
                 records.append(record)
             
-            logger.info(f"Retrieved {len(records)} records from Google Sheets.")
+            logger.info(f"Retrieved {len(records)} records from Google Sheets with actual row numbers.")
             return records
             
         except Exception as e:
@@ -211,17 +217,22 @@ class BankTransactionSyncer:
             
             logger.debug(f"Found {len(found_fields)} of {len(required_fields)} required fields")
             
-            # Show first few data rows with only required fields
+            # Show first few data rows with only required fields and actual row numbers
             if found_fields:
-                logger.debug("=== SAMPLE DATA (Required Fields Only) ===")
+                logger.debug("=== SAMPLE DATA (Required Fields + Actual Row Numbers) ===")
                 field_indices = {field: headers.index(field) for field in found_fields}
                 
                 for i, row in enumerate(values[1:3], 1):  # Show first 2 data rows
-                    sample_data = {}
+                    # Skip empty rows in diagnosis too
+                    if not any(str(value).strip() for value in row):
+                        continue
+                        
+                    actual_row_num = i + 1  # Actual Google Sheets row number (header is row 1)
+                    sample_data = {'Row_Num': actual_row_num}
                     for field, col_index in field_indices.items():
                         value = row[col_index] if col_index < len(row) else ''
                         sample_data[field] = value
-                    logger.debug(f"Row {i}: {sample_data}")
+                    logger.debug(f"Google Sheets Row {actual_row_num}: {sample_data}")
             
         except Exception as e:
             logger.error(f"Failed to diagnose sheet structure: {e}")
