@@ -10,3 +10,4 @@ data/
 *.log*
 output.csv
 UploadGrist/
+runtime/
