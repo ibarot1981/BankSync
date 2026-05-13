@@ -76,11 +76,16 @@ class GristClient:
     def create_records(self, payloads: list[dict[str, Any]]) -> list[str]:
         if not payloads:
             return []
-        response = self._request(
-            "POST",
+        response = self.session.post(
             self.records_url,
+            timeout=self.timeout,
             data=json.dumps({"records": [{"fields": payload} for payload in payloads]}),
         )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            body = response.text[:2000]
+            raise requests.HTTPError(f"{exc} | response body: {body}") from exc
         created = response.json().get("records", [])
         return [str(item.get("id")) for item in created]
 
@@ -89,7 +94,11 @@ class GristClient:
         record: TransactionRecord,
         columns: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        fields: dict[str, Any] = {
+        label_to_id = {column.get("label"): column.get("id") for column in columns}
+        id_set = {column.get("id") for column in columns}
+        fields: dict[str, Any] = {}
+
+        base_field_map = {
             "Bank": record.bank,
             "Transaction_Date": record.transaction_date,
             "Transaction_Amount": float(record.transaction_amount),
@@ -98,12 +107,13 @@ class GristClient:
             "Value_Date": record.value_date,
         }
         if record.source_row_num is not None:
-            fields["GSheets_RowNum"] = record.source_row_num
+            base_field_map["GSheets_RowNum"] = record.source_row_num
         if record.running_balance:
-            fields["Running_Balance"] = record.running_balance
+            base_field_map["Running_Balance"] = record.running_balance
 
-        label_to_id = {column.get("label"): column.get("id") for column in columns}
-        id_set = {column.get("id") for column in columns}
+        for field_name, field_value in base_field_map.items():
+            if field_name in id_set:
+                fields[field_name] = field_value
 
         for extra_key, extra_value in record.extras.items():
             if extra_key in id_set:

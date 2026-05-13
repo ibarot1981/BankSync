@@ -154,11 +154,12 @@ def run_daily(config: AppConfig, logger: logging.Logger, force: bool = False) ->
     store = SQLiteStore(config.runtime.db_path)
     store.initialize()
     run_id = _new_run_id("daily")
+    logger.info("Starting daily run %s (force=%s).", run_id, force)
 
     try:
         lock.acquire()
-    except LockAcquisitionError:
-        logger.warning("Another BankUpdate run is already active. Exiting daily mode.")
+    except LockAcquisitionError as exc:
+        logger.warning("Another BankUpdate run is already active. Exiting daily mode. %s", exc)
         store.close()
         return LOCK_EXIT_CODE
 
@@ -226,6 +227,16 @@ def run_daily(config: AppConfig, logger: logging.Logger, force: bool = False) ->
             store.set_state("last_daily_run_at", datetime.now().isoformat(timespec="seconds"))
 
         _write_manual_review_report(config, run_id, manual_reviews)
+        logger.info(
+            "Daily run %s completed: fetched=%s new=%s queued=%s delivered=%s retry=%s manual_review=%s.",
+            run_id,
+            fetched_count,
+            new_count,
+            queued_count,
+            delivered_count,
+            retry_count,
+            len(manual_reviews),
+        )
         return 0
     except Exception as exc:
         with store.transaction():
@@ -252,11 +263,12 @@ def run_retry(config: AppConfig, logger: logging.Logger) -> int:
     store = SQLiteStore(config.runtime.db_path)
     store.initialize()
     run_id = _new_run_id("retry")
+    logger.info("Starting retry run %s.", run_id)
 
     try:
         lock.acquire()
-    except LockAcquisitionError:
-        logger.warning("Another BankUpdate run is already active. Exiting retry mode.")
+    except LockAcquisitionError as exc:
+        logger.warning("Another BankUpdate run is already active. Exiting retry mode. %s", exc)
         store.close()
         return LOCK_EXIT_CODE
 
@@ -273,6 +285,12 @@ def run_retry(config: AppConfig, logger: logging.Logger) -> int:
                 retry_count=retry_count,
             )
             store.set_state("last_retry_run_at", datetime.now().isoformat(timespec="seconds"))
+        logger.info(
+            "Retry run %s completed: delivered=%s left_for_retry=%s.",
+            run_id,
+            delivered_count,
+            retry_count,
+        )
         return 0
     except Exception as exc:
         with store.transaction():
@@ -289,11 +307,12 @@ def run_bootstrap(config: AppConfig, logger: logging.Logger) -> int:
     store = SQLiteStore(config.runtime.db_path)
     store.initialize()
     run_id = _new_run_id("bootstrap")
+    logger.info("Starting bootstrap run %s.", run_id)
 
     try:
         lock.acquire()
-    except LockAcquisitionError:
-        logger.warning("Another BankUpdate run is already active. Exiting bootstrap mode.")
+    except LockAcquisitionError as exc:
+        logger.warning("Another BankUpdate run is already active. Exiting bootstrap mode. %s", exc)
         store.close()
         return LOCK_EXIT_CODE
 
@@ -324,6 +343,7 @@ def run_bootstrap(config: AppConfig, logger: logging.Logger) -> int:
 def run_health(config: AppConfig, logger: logging.Logger) -> int:
     store = SQLiteStore(config.runtime.db_path)
     store.initialize()
+    logger.info("Starting health check.")
 
     try:
         sheets_client = GoogleSheetsClient(config)

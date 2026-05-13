@@ -51,7 +51,10 @@ def deliver_pending_queue(
 ) -> tuple[int, int]:
     rows = store.get_queue_records(("pending", "retry"))
     if not rows:
+        logger.info("No pending or retry delivery rows found.")
         return 0, 0
+
+    logger.info("Preparing to deliver %s queued BankUpdate rows to Grist.", len(rows))
 
     if not grist_client.is_available():
         logger.warning("Grist unavailable; leaving queue items pending for retry.")
@@ -65,11 +68,22 @@ def deliver_pending_queue(
         batch = rows[batch_start : batch_start + config.delivery_batch_size]
         transactions = [_row_to_transaction(dict(row)) for row in batch]
         payloads = [grist_client.map_transaction_to_grist_fields(record, columns) for record in transactions]
+        logger.info(
+            "Submitting delivery batch %s-%s of %s.",
+            batch_start + 1,
+            batch_start + len(batch),
+            len(rows),
+        )
 
         try:
             created_ids = grist_client.create_records(payloads)
         except Exception as exc:
             error_text = str(exc)
+            logger.error(
+                "Grist delivery batch failed for %s rows. Error: %s",
+                len(batch),
+                error_text,
+            )
             for row in batch:
                 store.mark_queue_retry(row["fingerprint"], error_text)
                 retry_count += 1
@@ -92,4 +106,9 @@ def deliver_pending_queue(
                 fingerprint=row["fingerprint"],
             )
 
+    logger.info(
+        "Delivery summary: delivered=%s, left_for_retry=%s.",
+        delivered_count,
+        retry_count,
+    )
     return delivered_count, retry_count
